@@ -1,0 +1,78 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    container:
+      image: barichello/godot-ci:4.3
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Konfiguracja Godot + Android
+        run: |
+          GV="${GODOT_VERSION:-4.3}"
+          mkdir -p ~/.local/share/godot/export_templates ~/.config/godot
+          if [ "$HOME" != "/root" ] && [ -d "/root/.local/share/godot/export_templates/${GV}.stable" ]; then
+            cp -r "/root/.local/share/godot/export_templates/${GV}.stable" ~/.local/share/godot/export_templates/
+          fi
+          KS=/root/debug.keystore
+          if [ ! -f "$KS" ]; then
+            keytool -keyalg RSA -genkeypair -alias androiddebugkey -keypass android \
+              -keystore "$PWD/debug.keystore" -storepass android \
+              -dname "CN=Android Debug,O=Android,C=US" -validity 9999 -deststoretype pkcs12
+            KS="$PWD/debug.keystore"
+          fi
+          SDK="${ANDROID_HOME:-/usr/lib/android-sdk}"
+          JDK="$(dirname "$(dirname "$(readlink -f "$(which javac)")")")"
+          echo "SDK=$SDK JDK=$JDK KS=$KS"
+          {
+            echo '[gd_resource type="EditorSettings" format=3]'
+            echo ''
+            echo '[resource]'
+            echo "export/android/android_sdk_path = \"$SDK\""
+            echo "export/android/java_sdk_path = \"$JDK\""
+            echo "export/android/debug_keystore = \"$KS\""
+            echo 'export/android/debug_keystore_user = "androiddebugkey"'
+            echo 'export/android/debug_keystore_pass = "android"'
+          } > ~/.config/godot/editor_settings-4.tres
+
+      - name: Import projektu
+        run: godot --headless --path . --import || true
+
+      - name: Test dymny (generowanie świata, woda, lawa)
+        run: |
+          godot --headless --path . res://tests/smoke.tscn 2>&1 | tee smoke.log || true
+          grep -q "WSZYSTKO OK" smoke.log
+
+      - name: Test przetrwania (crafting, moby, serca)
+        run: |
+          godot --headless --fixed-fps 60 --path . res://tests/survival.tscn 2>&1 | grep -E "OK|FAIL|WYNIK" | tee surv.log || true
+          grep -q "WYNIK PRZETRWANIA: OK" surv.log
+
+      - name: Eksport APK
+        run: |
+          mkdir -p build/android
+          godot --headless --path . --export-debug "Android" build/android/zywy-swiat.apk
+          ls -la build/android
+          test -f build/android/zywy-swiat.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zywy-swiat-apk
+          path: build/android/zywy-swiat.apk
+
+      - name: Release z APK (do pobrania na telefonie)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: "Build #${{ github.run_number }}"
+          prerelease: true
+          files: build/android/zywy-swiat.apk
